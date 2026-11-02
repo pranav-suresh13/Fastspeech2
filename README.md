@@ -47,3 +47,4 @@ This repository implements and evaluates the FastSpeech 2 Text-to-Speech (TTS) a
 
 ## Setup & Dependencies
 Refer to `requirements.txt` for environment requirements.
+

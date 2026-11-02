@@ -33,3 +33,7 @@ Thumbs.db
 
 # Results placeholders (do not ignore .gitkeep)
 !.gitkeep
+
+
+# Reference repo
+reference_repo/
