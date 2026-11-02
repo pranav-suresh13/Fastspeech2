@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# Data and large audio files
+raw_data/
+data/
+datasets/
+*.wav
+*.mp3
+*.flac
+*.tar.gz
+*.zip
+
+# PyTorch checkpoints (spec mentions: use Git LFS or external links if > GitHub file size limits)
+*.pth
+*.pt
+!English/checkpoints/.gitkeep
+!Telugu/checkpoints/.gitkeep
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Results placeholders (do not ignore .gitkeep)
+!.gitkeep
