@@ -13,17 +13,32 @@ ENV/
 raw_data/
 data/
 datasets/
-*.wav
+preprocessed_data/
+*.npy
 *.mp3
 *.flac
 *.tar.gz
 *.zip
+*.pth.tar
 
-# PyTorch checkpoints (spec mentions: use Git LFS or external links if > GitHub file size limits)
+# General audio ignore, but whitelist the assignment required test generated audios
+*.wav
+!Results/English/test_generated_audios/*.wav
+!Results/Telugu/test_generated_audios/*.wav
+
+# PyTorch checkpoints (stored on Google Drive / Kaggle per README instructions)
 *.pth
 *.pt
 !English/checkpoints/.gitkeep
 !Telugu/checkpoints/.gitkeep
+
+# Output and logs
+output/
+*.log
+
+# RB folder (contains all archived, backup, and raw reference files ~24GB)
+RB/
+reference_repo/
 
 # IDE & OS
 .vscode/
@@ -33,7 +48,3 @@ Thumbs.db
 
 # Results placeholders (do not ignore .gitkeep)
 !.gitkeep
-
-
-# Reference repo
-reference_repo/

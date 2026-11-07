@@ -1,8 +1,20 @@
 import os
+import sys
 import json
 
-import torch
 import numpy as np
+import torch
+
+# PyTorch 2.6+ unpickler safety override
+try:
+    torch.serialization.add_safe_globals([
+        np.core.multiarray.scalar,
+        np.ndarray,
+        np.dtype,
+        getattr(np.core.multiarray, '_reconstruct', None)
+    ])
+except Exception:
+    pass
 
 import hifigan
 from model import FastSpeech2, ScheduledOptim
@@ -17,7 +29,10 @@ def get_model(args, configs, device, train=False):
             train_config["path"]["ckpt_path"],
             "{}.pth.tar".format(args.restore_step),
         )
-        ckpt = torch.load(ckpt_path)
+        try:
+            ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+        except TypeError:
+            ckpt = torch.load(ckpt_path, map_location=device)
         model.load_state_dict(ckpt["model"])
 
     if train:
@@ -55,14 +70,24 @@ def get_vocoder(config, device):
         vocoder.mel2wav.eval()
         vocoder.mel2wav.to(device)
     elif name == "HiFi-GAN":
+        ckpt_path = "hifigan/generator_universal.pth.tar" if speaker == "universal" else "hifigan/generator_LJSpeech.pth.tar"
+        if not os.path.exists(ckpt_path):
+            print(f"[Notice] Vocoder checkpoint '{ckpt_path}' not found. Audio logging will be skipped.")
+            return None
         with open("hifigan/config.json", "r") as f:
             config = json.load(f)
         config = hifigan.AttrDict(config)
         vocoder = hifigan.Generator(config)
         if speaker == "LJSpeech":
-            ckpt = torch.load("hifigan/generator_LJSpeech.pth.tar")
+            try:
+                ckpt = torch.load("hifigan/generator_LJSpeech.pth.tar", map_location=device, weights_only=False)
+            except TypeError:
+                ckpt = torch.load("hifigan/generator_LJSpeech.pth.tar", map_location=device)
         elif speaker == "universal":
-            ckpt = torch.load("hifigan/generator_universal.pth.tar")
+            try:
+                ckpt = torch.load("hifigan/generator_universal.pth.tar", map_location=device, weights_only=False)
+            except TypeError:
+                ckpt = torch.load("hifigan/generator_universal.pth.tar", map_location=device)
         vocoder.load_state_dict(ckpt["generator"])
         vocoder.eval()
         vocoder.remove_weight_norm()
@@ -85,8 +110,9 @@ def vocoder_infer(mels, vocoder, model_config, preprocess_config, lengths=None):
     ).astype("int16")
     wavs = [wav for wav in wavs]
 
+    hop_length = preprocess_config["preprocessing"]["stft"]["hop_length"]
     for i in range(len(mels)):
         if lengths is not None:
-            wavs[i] = wavs[i][: lengths[i]]
+            wavs[i] = wavs[i][: lengths[i] * hop_length]
 
     return wavs

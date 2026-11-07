@@ -1,9 +1,18 @@
-import argparse
 import os
+import sys
+
+# Numpy 1.x vs 2.x unpickling compatibility
+try:
+    import numpy as np
+    import numpy.core.multiarray
+    sys.modules['numpy._core'] = np.core
+    sys.modules['numpy._core.multiarray'] = np.core.multiarray
+except Exception:
+    pass
+
+import argparse
 import re
 from string import punctuation
-
-import numpy as np
 import torch
 import yaml
 import matplotlib.pyplot as plt
@@ -41,34 +50,56 @@ def read_lexicon(lex_path):
             for line in f:
                 temp = re.split(r"\s+", line.strip("\n"))
                 word = temp[0]
-                phones = temp[1:]
-                if word.lower() not in lexicon:
-                    lexicon[word.lower()] = phones
+                raw_phones = [p for p in temp[1:] if not re.match(r"^[0-9.]+$", p) and p != ""]
+                if word.lower() not in lexicon and raw_phones:
+                    lexicon[word.lower()] = raw_phones
     return lexicon
+
+
+CUSTOM_OOV = {
+    "antidisestablishmentarianism": ["AE2", "N", "T", "IY0", "D", "IH2", "S", "AH0", "S", "T", "AE2", "B", "L", "IH0", "SH", "M", "AH0", "N", "T", "EH2", "R", "IY0", "AH0", "N", "IH1", "Z", "AH0", "M"],
+    "andaroo": ["AH0", "N", "D", "AA1", "R", "UW0"],
+}
 
 
 def preprocess_english(text, preprocess_config):
     text = text.rstrip(punctuation)
+    # Handle the specific spacing typo in E3 "rhyth m" -> "rhythm" while preserving test text
+    clean_lookup_text = re.sub(r'\brhyth\s+m\b', 'rhythm', text, flags=re.IGNORECASE)
+    tokens = re.findall(r"[\w']+|[.,!?;—\-]", clean_lookup_text)
     lexicon = read_lexicon(preprocess_config["path"]["lexicon_path"])
 
     g2p = G2p()
     phones = []
-    words = re.split(r"([,;.\-\?\!\s+])", text)
-    for w in words:
-        if w.lower() in lexicon:
-            phones += lexicon[w.lower()]
-        else:
-            phones += list(filter(lambda p: p != " ", g2p(w)))
-    phones = "{" + "}{".join(phones) + "}"
-    phones = re.sub(r"\{[^\w\s]?\}", "{sp}", phones)
-    phones = phones.replace("}{", " ")
+    pause_marks = {".", ",", ";", "?", "!", "—", "-"}
 
+    for token in tokens:
+        if token in pause_marks:
+            if len(phones) > 0 and phones[-1] != "spn":
+                phones.append("spn")
+            continue
+
+        w_low = token.lower()
+        if w_low in CUSTOM_OOV:
+            w_phones = CUSTOM_OOV[w_low]
+        elif w_low in lexicon:
+            w_phones = lexicon[w_low]
+        else:
+            w_phones = [p for p in g2p(token) if p != " " and not re.match(r"^[0-9.]+$", p)]
+
+        phones.extend(w_phones)
+
+    # Add trailing silence to prevent abrupt vocoder cutoff
+    if len(phones) == 0 or phones[-1] != "spn":
+        phones.append("spn")
+
+    phones_str = "{" + " ".join(phones) + "}"
     sequence = np.array(
         text_to_sequence(
-            phones, preprocess_config["preprocessing"]["text"]["text_cleaners"]
+            phones_str, preprocess_config["preprocessing"]["text"]["text_cleaners"]
         )
     )
-    return sequence, phones
+    return sequence, phones_str
 
 
 def plot_variance_features(sample_id, phones_str, duration, pitch, energy, results_dir):
@@ -119,13 +150,13 @@ def plot_variance_features(sample_id, phones_str, duration, pitch, energy, resul
     plt.close()
 
 
-def synthesize_utterance(model, vocoder, text, sample_id, configs, results_dir, p_control=1.0, e_control=1.0, d_control=1.0):
+def synthesize_utterance(model, vocoder, text, sample_id, configs, results_dir, speaker_id=0, p_control=1.0, e_control=1.0, d_control=1.0):
     preprocess_config, model_config, train_config = configs
     sequence, phones_str = preprocess_english(text, preprocess_config)
 
     seq_tensor = torch.from_numpy(sequence).long().unsqueeze(0).to(device)
     src_len = torch.tensor([len(sequence)]).long().to(device)
-    speakers = torch.tensor([0]).long().to(device)
+    speakers = torch.tensor([speaker_id]).long().to(device)
 
     with torch.no_grad():
         output = model(
@@ -152,15 +183,18 @@ def synthesize_utterance(model, vocoder, text, sample_id, configs, results_dir, 
         wavs = vocoder_infer(postnet_mel, vocoder, model_config, preprocess_config, [mel_len])
         wav = wavs[0]
 
-        # Save audio
-        audio_dir = os.path.join(results_dir, "test_generated_audios")
-        os.makedirs(audio_dir, exist_ok=True)
-        audio_path = os.path.join(audio_dir, f"{sample_id}.wav")
+        # Add 150ms leading and trailing silence padding (prevents vocoder boundary buzzing/distortion)
         sampling_rate = preprocess_config["preprocessing"]["audio"]["sampling_rate"]
+        silence_samples = int(0.15 * sampling_rate)
+        wav = np.concatenate([np.zeros(silence_samples, dtype=wav.dtype), wav, np.zeros(silence_samples, dtype=wav.dtype)])
+
+        # Save audio
+        os.makedirs(results_dir, exist_ok=True)
+        audio_path = os.path.join(results_dir, f"{sample_id}.wav")
         wavfile.write(audio_path, sampling_rate, wav)
         print(f"[{sample_id}] Generated audio saved to: {audio_path}")
 
-        # Save variance plots
+        # Save variance plots (plots go in variance_adaptor_plots under results_dir)
         plot_variance_features(sample_id, phones_str, duration, pitch, energy, results_dir)
         print(f"[{sample_id}] Variance plots saved under {results_dir}/variance_adaptor_plots/")
 
@@ -176,11 +210,20 @@ def main():
     parser.add_argument("--pitch_control", type=float, default=1.0)
     parser.add_argument("--energy_control", type=float, default=1.0)
     parser.add_argument("--duration_control", type=float, default=1.0)
+    parser.add_argument("--speaker_id", type=int, default=0, help="Speaker ID (0: en_female, 1: en_male)")
+    parser.add_argument("--vocoder_speaker", type=str, default=None, choices=["universal", "LJSpeech"], help="HiFi-GAN vocoder model (universal or LJSpeech)")
+    parser.add_argument("--out_dir", type=str, default=None, help="Custom output directory")
     args = parser.parse_args()
 
     configs = load_configs(args.config)
     preprocess_config, model_config, train_config = configs
-    results_dir = train_config["path"].get("result_path", "../Results/English")
+    if args.vocoder_speaker:
+        model_config["vocoder"]["speaker"] = args.vocoder_speaker
+
+    base_results_dir = train_config["path"].get("result_path", "../Results/English")
+    # Route to gender-specific subdirectory so female/male audios don't overwrite each other
+    speaker_name = "test_generated_audios_female" if args.speaker_id == 0 else "test_generated_audios_male"
+    results_dir = args.out_dir if args.out_dir else os.path.join(base_results_dir, speaker_name)
 
     # Load Model
     model = get_model(args, configs, device, train=False)
@@ -211,12 +254,14 @@ def main():
         for sid, text in TEST_SENTENCES.items():
             synthesize_utterance(
                 model, vocoder, text, sid, configs, results_dir,
-                args.pitch_control, args.energy_control, args.duration_control
+                speaker_id=args.speaker_id,
+                p_control=args.pitch_control, e_control=args.energy_control, d_control=args.duration_control
             )
     elif args.text:
         synthesize_utterance(
             model, vocoder, args.text, args.sample_id, configs, results_dir,
-            args.pitch_control, args.energy_control, args.duration_control
+            speaker_id=args.speaker_id,
+            p_control=args.pitch_control, e_control=args.energy_control, d_control=args.duration_control
         )
     else:
         print("Please provide --test_set to run all assignment sentences, or --text 'your sentence'.")
@@ -224,3 +269,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

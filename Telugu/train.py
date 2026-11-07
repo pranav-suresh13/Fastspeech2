@@ -11,6 +11,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 from utils.model import get_model, get_vocoder, get_param_num
+from utils.plot_utils import plot_comprehensive_losses, plot_validation_contours
 from utils.tools import to_device, log, synth_one_sample
 from model import FastSpeech2Loss
 from dataset import Dataset
@@ -29,6 +30,8 @@ def load_configs(config_path="config.yaml"):
 
 
 def plot_loss_curves(train_losses, val_losses, result_dir):
+    plot_comprehensive_losses(train_losses, val_losses, result_dir)
+    return
     os.makedirs(result_dir, exist_ok=True)
     
     # Plot training loss
@@ -134,7 +137,7 @@ def main(args, configs):
 
                 if step % log_step == 0:
                     losses_val = [l.item() for l in losses]
-                    train_loss_history.append((step, losses_val[0]))
+                    train_loss_history.append((step, losses_val))
                     message = "Step {}/{}, Total: {:.4f}, Mel: {:.4f}, PostNet: {:.4f}, Pitch: {:.4f}, Energy: {:.4f}, Dur: {:.4f}".format(
                         step, total_step, *losses_val
                     )
@@ -154,8 +157,10 @@ def main(args, configs):
 
                 if step % val_step == 0:
                     model.eval()
-                    eval_msg, val_total_loss = evaluate(model, step, configs, val_logger, vocoder)
-                    val_loss_history.append((step, val_total_loss))
+                    eval_msg, val_losses, last_val_data = evaluate(model, step, configs, val_logger, vocoder)
+                    val_loss_history.append((step, val_losses))
+                    if last_val_data is not None:
+                        plot_validation_contours(last_val_data[0], last_val_data[1], step, result_path)
                     with open(os.path.join(val_log_path, "log.txt"), "a") as f:
                         f.write(eval_msg + "\n")
                     outer_bar.write(eval_msg)
@@ -187,6 +192,7 @@ def main(args, configs):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--restore_step", type=int, default=0)
+    parser.add_argument("--total_step", type=int, default=None, help="Override total training steps")
     parser.add_argument("--config", type=str, default="config.yaml", help="Path to unified config.yaml")
     parser.add_argument("-p", "--preprocess_config", type=str, default=None)
     parser.add_argument("-m", "--model_config", type=str, default=None)
@@ -200,5 +206,8 @@ if __name__ == "__main__":
         configs = (preprocess_config, model_config, train_config)
     else:
         configs = load_configs(args.config)
+
+    if args.total_step is not None:
+        configs[2]["step"]["total_step"] = args.total_step
 
     main(args, configs)

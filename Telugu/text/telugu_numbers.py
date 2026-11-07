@@ -72,3 +72,4 @@ def normalize_telugu_numbers(text: str) -> str:
     # 3. Normalize standalone numbers (e.g. 2026)
     text = re.sub(r'\b\d+\b', lambda m: num_to_telugu(int(m.group(0))), text)
     return text
+

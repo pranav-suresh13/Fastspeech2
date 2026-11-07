@@ -83,7 +83,16 @@ def evaluate(model, step, configs, logger=None, vocoder=None):
             tag="Validation/step_{}_{}_synthesized".format(step, tag),
         )
 
-    return message, loss_means[0]
+    eval_dir = os.path.join(train_config["path"].get("result_path", "Results"), "eval_plots")
+    os.makedirs(eval_dir, exist_ok=True)
+    if "fig" in locals() and fig is not None:
+        try:
+            fig.savefig(os.path.join(eval_dir, f"mel_eval_step_{step}.png"), dpi=180)
+            plt.close(fig)
+        except Exception:
+            pass
+
+    return message, loss_means, (batch, output)
 
 
 if __name__ == "__main__":

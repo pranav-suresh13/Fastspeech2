@@ -22,3 +22,4 @@ if __name__ == "__main__":
 
     preprocessor = Preprocessor(config)
     preprocessor.build_from_path()
+

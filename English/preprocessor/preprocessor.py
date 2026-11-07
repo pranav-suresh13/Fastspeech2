@@ -82,12 +82,12 @@ class Preprocessor:
                         info, pitch, energy, n = ret
                     out.append(info)
 
-                if len(pitch) > 0:
-                    pitch_scaler.partial_fit(pitch.reshape((-1, 1)))
-                if len(energy) > 0:
-                    energy_scaler.partial_fit(energy.reshape((-1, 1)))
+                    if len(pitch) > 0:
+                        pitch_scaler.partial_fit(pitch.reshape((-1, 1)))
+                    if len(energy) > 0:
+                        energy_scaler.partial_fit(energy.reshape((-1, 1)))
 
-                n_frames += n
+                    n_frames += n
 
         print("Computing statistic quantities ...")
         # Perform normalization if necessary
@@ -139,15 +139,38 @@ class Preprocessor:
             )
         )
 
-        random.shuffle(out)
         out = [r for r in out if r is not None]
+
+        # Preserve the curated zero-overlap train and validation split
+        manifest_dir = os.path.abspath(os.path.join(self.in_dir, ".."))
+        train_mf = os.path.join(manifest_dir, "train.txt")
+        val_mf = os.path.join(manifest_dir, "val.txt")
+
+        train_ids = set()
+        val_ids = set()
+        if os.path.exists(train_mf) and os.path.exists(val_mf):
+            with open(train_mf, "r", encoding="utf-8") as mf_f:
+                train_ids = set(l.strip().split("|")[0] for l in mf_f if l.strip())
+            with open(val_mf, "r", encoding="utf-8") as mf_f:
+                val_ids = set(l.strip().split("|")[0] for l in mf_f if l.strip())
+
+        out_train = []
+        out_val = []
+        for m in out:
+            fid = m.split("|")[0]
+            if fid in val_ids:
+                out_val.append(m)
+            else:
+                out_train.append(m)
+
+        print(f"Preserving split: {len(out_train)} training samples, {len(out_val)} validation samples.")
 
         # Write metadata
         with open(os.path.join(self.out_dir, "train.txt"), "w", encoding="utf-8") as f:
-            for m in out[self.val_size :]:
+            for m in out_train:
                 f.write(m + "\n")
         with open(os.path.join(self.out_dir, "val.txt"), "w", encoding="utf-8") as f:
-            for m in out[: self.val_size]:
+            for m in out_val:
                 f.write(m + "\n")
 
         return out
@@ -175,7 +198,7 @@ class Preprocessor:
         ].astype(np.float32)
 
         # Read raw text
-        with open(text_path, "r") as f:
+        with open(text_path, "r", encoding="utf-8") as f:
             raw_text = f.readline().strip("\n")
 
         # Compute fundamental frequency

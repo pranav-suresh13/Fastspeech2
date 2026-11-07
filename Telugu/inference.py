@@ -1,9 +1,18 @@
-import argparse
 import os
+import sys
+
+# Numpy 1.x vs 2.x unpickling compatibility
+try:
+    import numpy as np
+    import numpy.core.multiarray
+    sys.modules['numpy._core'] = np.core
+    sys.modules['numpy._core.multiarray'] = np.core.multiarray
+except Exception:
+    pass
+
+import argparse
 import re
 from string import punctuation
-
-import numpy as np
 import torch
 import yaml
 import matplotlib.pyplot as plt
@@ -48,9 +57,46 @@ def read_lexicon(lex_path):
 
 def preprocess_telugu(text, preprocess_config):
     cleaners = preprocess_config["preprocessing"]["text"].get("text_cleaners", ["telugu_cleaners"])
-    sequence = np.array(text_to_sequence(text, cleaners))
-    tokens = list(text)
-    return sequence, tokens
+    clean_text = text
+    for c_name in cleaners:
+        from text import cleaners as text_cleaners
+        if hasattr(text_cleaners, c_name):
+            clean_text = getattr(text_cleaners, c_name)(clean_text)
+
+    lexicon = read_lexicon(preprocess_config["path"]["lexicon_path"])
+    tokens = re.findall(r"[\w\u0C00-\u0C7F']+|[.,!?;—\-।]", clean_text)
+    pause_marks = {".", ",", ";", "?", "!", "—", "-", "।"}
+    phones = []
+
+    epi = None
+    try:
+        import epitran
+        epi = epitran.Epitran("tel-Telu")
+    except Exception:
+        pass
+
+    for token in tokens:
+        if token in pause_marks:
+            if len(phones) > 0 and phones[-1] != "sp":
+                phones.append("sp")
+            continue
+
+        if token in lexicon:
+            w_phones = lexicon[token]
+        elif epi is not None:
+            w_phones = epi.trans_list(token)
+        else:
+            w_phones = list(token)
+
+        phones.extend(w_phones)
+
+    # Add trailing silence to prevent abrupt vocoder cutoff
+    if len(phones) == 0 or phones[-1] != "sp":
+        phones.append("sp")
+
+    phones_str = "{" + " ".join(phones) + "}"
+    sequence = np.array(text_to_sequence(phones_str, cleaners))
+    return sequence, phones_str
 
 
 def plot_variance_features(sample_id, tokens, duration, pitch, energy, results_dir):
@@ -128,11 +174,15 @@ def synthesize_utterance(model, vocoder, text, sample_id, configs, results_dir, 
         wavs = vocoder_infer(postnet_mel, vocoder, model_config, preprocess_config, [mel_len])
         wav = wavs[0]
 
+        # Add 150ms leading and trailing silence padding (prevents vocoder boundary buzzing/distortion)
+        sampling_rate = preprocess_config["preprocessing"]["audio"]["sampling_rate"]
+        silence_samples = int(0.15 * sampling_rate)
+        wav = np.concatenate([np.zeros(silence_samples, dtype=wav.dtype), wav, np.zeros(silence_samples, dtype=wav.dtype)])
+
         # Save audio
         audio_dir = os.path.join(results_dir, "test_generated_audios")
         os.makedirs(audio_dir, exist_ok=True)
         audio_path = os.path.join(audio_dir, f"{sample_id}.wav")
-        sampling_rate = preprocess_config["preprocessing"]["audio"]["sampling_rate"]
         wavfile.write(audio_path, sampling_rate, wav)
         print(f"[{sample_id}] Generated audio saved to: {audio_path}")
 
@@ -198,3 +248,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
